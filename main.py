@@ -1,115 +1,114 @@
 import os
+import json
 import logging
 import asyncio
+from datetime import datetime
 from telegram import Bot
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-# ========== CONFIG ==========
-
-BOT_TOKEN = '8134658376:AAFTmSw2ZxCaTmRGqEyW2Kd1stNSLTrSXB4'
-CHAT_ID = 5816675516
-MEDIA_PATH = 'media'
-TEXTS_FILE = 'texts/texts.txt'
-# ============================
-
-bot = Bot(token=BOT_TOKEN)
-logging.basicConfig(level=logging.INFO)
-scheduler = AsyncIOScheduler()
-
-# Track index across all types
-media_index = {'value': 0}
-
-
-def get_sorted_media_files(exts):
-    files = [f for f in os.listdir(MEDIA_PATH) if f.lower().endswith(exts)]
-    return sorted(files)
-
-
-def get_texts():
-    if not os.path.exists(TEXTS_FILE):
-        return []
-    with open(TEXTS_FILE, 'r', encoding='utf-8') as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-async def send_reminder(time_of_day):
-    text_list = get_texts()
-    image_files = get_sorted_media_files(('.jpg', '.png'))
-    audio_files = get_sorted_media_files(('.mp3', '.ogg'))
-
-    total = max(len(text_list), len(image_files), len(audio_files))
-    if total == 0:
-        await bot.send_message(chat_id=CHAT_ID, text="⚠️ No reminder content found.")
-        return
-
-    index = media_index['value'] % total
-    await bot.send_message(chat_id=CHAT_ID, text=f"🔔 {time_of_day.capitalize()} Reminder")
-
-    # Send text
-    if index < len(text_list):
-        await bot.send_message(chat_id=CHAT_ID, text=text_list[index])
-
-    # Send audio
-    if index < len(audio_files):
-        audio_path = os.path.join(MEDIA_PATH, audio_files[index])
-        if os.path.getsize(audio_path) > 0:
-            with open(audio_path, 'rb') as audio:
-                await bot.send_audio(chat_id=CHAT_ID, audio=audio)
-
-    # Send image
-    if index < len(image_files):
-        image_path = os.path.join(MEDIA_PATH, image_files[index])
-        if os.path.getsize(image_path) > 0:
-            with open(image_path, 'rb') as img:
-                await bot.send_photo(chat_id=CHAT_ID, photo=img)
-
-    media_index['value'] += 1
-
-
-# Scheduling with wrapper
-def schedule_job(time_of_day, hour, minute):
-    def job():
-        asyncio.run(send_reminder(time_of_day))
-    scheduler.add_job(job, 'cron', hour=hour, minute=minute)
-
-
-
-async def main():
-    logging.info("Reminder bot started...")
-    schedule_job("morning", 7, 0)
-    schedule_job("afternoon", 12, 0)
-    schedule_job("evening", 20, 0)
-    schedule_job("custom", 10, 0)
-    scheduler.start()
-
-    # Optional test now
-    await send_reminder("test")
-
-    while True:
-        await asyncio.sleep(60)
-
-
+from apscheduler.schedulers.blocking import BlockingScheduler
 from flask import Flask
 import threading
 
-# Create a minimal Flask app just to fake a web server
+# === CONFIG ===
+BOT_TOKEN = os.getenv("8134658376:AAFTmSw2ZxCaTmRGqEyW2Kd1stNSLTrSXB4")
+CHAT_ID = int(os.getenv("5816675516"))
+MEDIA_DIR = "media"
+SCHEDULE_FILE = "schedule.json"
+INDEX_FILE = "schedule_index.json"
+TIMEZONE_OFFSET = 5  # Adjust to your time zone
+# ===============
+
+bot = Bot(token=BOT_TOKEN)
+scheduler = BlockingScheduler()
+logging.basicConfig(level=logging.INFO)
+
+# === UTILITIES ===
+
+def load_schedule():
+    with open(SCHEDULE_FILE, 'r') as f:
+        return json.load(f)
+
+def load_index():
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def save_index(index):
+    with open(INDEX_FILE, 'w') as f:
+        json.dump(index, f)
+
+async def send_file(filename):
+    path = os.path.join(MEDIA_DIR, filename)
+    if not os.path.exists(path) or os.stat(path).st_size == 0:
+        logging.warning(f"⚠️ Skipped missing or empty file: {filename}")
+        return
+
+    try:
+        if filename.endswith('.jpg') or filename.endswith('.png'):
+            with open(path, 'rb') as img:
+                await bot.send_photo(chat_id=CHAT_ID, photo=img)
+
+        elif filename.endswith('.mp3') or filename.endswith('.ogg'):
+            with open(path, 'rb') as audio:
+                await bot.send_audio(chat_id=CHAT_ID, audio=audio)
+
+        elif filename.endswith('.mp4'):
+            with open(path, 'rb') as vid:
+                await bot.send_video(chat_id=CHAT_ID, video=vid)
+
+        elif filename.endswith('.txt'):
+            with open(path, 'r', encoding='utf-8') as txt:
+                await bot.send_message(chat_id=CHAT_ID, text=txt.read())
+
+        else:
+            logging.warning(f"Unsupported file type: {filename}")
+    except Exception as e:
+        logging.error(f"❌ Failed to send {filename}: {e}")
+
+def schedule_jobs():
+    schedule = load_schedule()
+    index = load_index()
+
+    for time_str, file_list in schedule.items():
+        try:
+            hour, minute = map(int, time_str.split(":"))
+            hour_utc = (hour - TIMEZONE_OFFSET) % 24
+
+            def make_job(time_str=time_str):
+                def job():
+                    try:
+                        schedule = load_schedule()
+                        index = load_index()
+                        files = schedule.get(time_str, [])
+                        if not files:
+                            return
+                        idx = index.get(time_str, 0) % len(files)
+                        filename = files[idx]
+                        asyncio.run(send_file(filename))
+                        index[time_str] = idx + 1
+                        save_index(index)
+                    except Exception as e:
+                        logging.error(f"Job error for {time_str}: {e}")
+                return job
+
+            scheduler.add_job(make_job(), 'cron', hour=hour_utc, minute=minute)
+            logging.info(f"✅ Scheduled {time_str} → {file_list}")
+
+        except Exception as e:
+            logging.error(f"Error scheduling {time_str}: {e}")
+
+# === FLASK DUMMY WEB SERVER ===
 app = Flask(__name__)
-
-
 @app.route('/')
 def home():
     return "Reminder bot is running!"
 
-
-def run_web_server():
+def run_web():
     app.run(host="0.0.0.0", port=10000)
 
-
+# === MAIN ENTRY ===
 if __name__ == "__main__":
-    # Run the dummy web server in a background thread
-    threading.Thread(target=run_web_server).start()
+    threading.Thread(target=run_web).start()
+    schedule_jobs()
+    scheduler.start()
 
-    # Start your Telegram bot normally
-    import asyncio
-
-    asyncio.run(main())
