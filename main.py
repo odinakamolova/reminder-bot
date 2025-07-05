@@ -78,6 +78,7 @@ async def main():
     schedule_job("morning", 7, 0)
     schedule_job("afternoon", 12, 0)
     schedule_job("evening", 20, 0)
+    schedule_job("custom", 15, 0)
     scheduler.start()
 
     # Optional test now
