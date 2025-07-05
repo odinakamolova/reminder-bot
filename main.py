@@ -69,8 +69,9 @@ async def send_reminder(time_of_day):
 # Scheduling with wrapper
 def schedule_job(time_of_day, hour, minute):
     def job():
-        asyncio.create_task(send_reminder(time_of_day))
+        asyncio.run(send_reminder(time_of_day))
     scheduler.add_job(job, 'cron', hour=hour, minute=minute)
+
 
 
 async def main():
@@ -78,7 +79,7 @@ async def main():
     schedule_job("morning", 7, 0)
     schedule_job("afternoon", 12, 0)
     schedule_job("evening", 20, 0)
-    schedule_job("custom", 15, 0)
+    schedule_job("custom", 10, 0)
     scheduler.start()
 
     # Optional test now
