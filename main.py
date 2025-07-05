@@ -87,6 +87,27 @@ async def main():
         await asyncio.sleep(60)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+from flask import Flask
+import threading
 
+# Create a minimal Flask app just to fake a web server
+app = Flask(__name__)
+
+
+@app.route('/')
+def home():
+    return "Reminder bot is running!"
+
+
+def run_web_server():
+    app.run(host="0.0.0.0", port=10000)
+
+
+if __name__ == "__main__":
+    # Run the dummy web server in a background thread
+    threading.Thread(target=run_web_server).start()
+
+    # Start your Telegram bot normally
+    import asyncio
+
+    asyncio.run(main())
